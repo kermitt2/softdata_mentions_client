@@ -1,0 +1,21 @@
+{
+    "software_mention_url": "http://localhost:8060",
+    "datastet_mention_url": "http://localhost:8050",
+    "data_path": "/media/lopez/data/bso3/annotations/metadata",
+    "aws_access_key_id": "",
+    "aws_secret_access_key": "",
+    "bucket_name": "",
+    "region": "",
+    "mongo_host": "127.0.0.1",
+    "mongo_port": "27017",
+    "mongo_db": "bso3",
+    "batch_size": 50,
+    "sleep_time": 1,
+    "concurrency": 6,
+    "timeout": 600,
+    "log_file": "client.log",
+    "log_level": "DEBUG",
+    "biblio_glutton_url": "http://localhost:8080",
+    "crossref_base": "https://api.crossref.org",
+    "crossref_email": "patrice.lopez@science-miner.com"
+}
