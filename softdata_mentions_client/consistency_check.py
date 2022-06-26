@@ -1,14 +1,14 @@
-'''
-    Basic script to check extracted mentions and offsets for annotations stored in mongodb. 
-    Possibility to clean annotations via stopwords. 
-'''
-
 import sys
 import os
 import shutil
 import json
 import pymongo
 import argparse
+
+"""
+    Basic script to check extracted mentions and offsets for annotations stored in mongodb. 
+    Possibility to clean annotations via stopwords. 
+"""
 
 def _load_config(path='./config.json'):
     """

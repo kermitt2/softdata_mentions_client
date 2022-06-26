@@ -116,7 +116,7 @@ The default config file is `./config.json`, but could also be specified via the 
 
 * locally:
 
-> python3 software_mentions_client/client.py --data-path /mnt/data/biblio-glutton-harvester/data/
+> python3 softdata_mentions_client/client.py --data-path /mnt/data/biblio-glutton-harvester/data/
 
 `--data-path` indicates the path to the repository of data harvested by [biblio-glutton-harvester](https://github.com/kermitt2/biblio-glutton-harvester).
 

@@ -1,7 +1,3 @@
-'''
-    Run the software mention recognizer service on PDF collections
-'''
-
 import gzip
 import sys
 import os
@@ -12,27 +8,35 @@ import lmdb
 import argparse
 import time
 import datetime
-from software_mentions_client import S3
+import S3
 import concurrent.futures
 import requests
 import pymongo
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import hashlib
 import copyreg
 import types
 import logging
 import logging.handlers
+import multiprocessing
+
+"""
+    Run the software and dataset mention recognizer services on collections of harvested PDF documents
+"""
 
 map_size = 100 * 1024 * 1024 * 1024 
 
-# default endpoint
-endpoint_pdf = 'service/annotateSoftwarePDF'
-endpoint_txt = 'service/annotateSoftwareText'
+# default endpoints
+endpoint_software_pdf = 'service/annotateSoftwarePDF'
+endpoint_software_txt = 'service/processSoftwareText'
+
+endpoint_dataset_pdf = 'service/annotateDatasetPDF'
+endpoint_dataset_txt = 'service/annotateDatasetSentence'
 
 # default logging settings
 logging.basicConfig(filename='client.log', filemode='w', level=logging.DEBUG)
 
-class software_mentions_client(object):
+class softdata_mentions_client(object):
     """
     Python client for using the Softcite software mention service. 
     """
@@ -42,6 +46,7 @@ class software_mentions_client(object):
         
         # standard lmdb environment for keeping track of the status of processing
         self.env_software = None
+        self.env_dataset = None
 
         self._load_config(config_path)
         self._init_lmdb()
@@ -91,35 +96,54 @@ class software_mentions_client(object):
             # this is the default value for a service timeout
             self.config["timeout"] = 600
 
-    def service_isalive(self):
-        # test if Softcite software mention recognizer is up and running...
-        the_url = f'http://{self.config["software_mention_host"]}:{self.config["software_mention_port"]}'
-        if not the_url.endswith("/"):
-            the_url += "/"
-        the_url += "service/isalive"
-        try:
-            r = requests.get(the_url)
+    def service_isalive(self, target):
+        # test if the service mention recognizers are up and running...
+        isalive = False
+        the_urls = []
+        the_names = []
 
-            if r.status_code != 200:
-                logging.error('Softcite software mention server does not appear up and running ' + str(r.status_code))
-            else:
-                logging.info("Softcite software mention server is up and running")
-                return True
-        except: 
-            logging.error('Softcite software mention server does not appear up and running: ' + 
-                'test call to Softcite software mention failed, please check and re-start a server.')
-        return False
+        print(self.config)
+
+        if target == "software" or target == "all":
+            if "software_mention_url" in self.config and len(self.config["software_mention_url"])>0:
+                the_urls.append(self.config["software_mention_url"])
+                the_names.append("Softcite software mention")
+        if target == "dataset" or target == "all":
+            if "datastet_mention_url" in self.config and len(self.config["datastet_mention_url"])>0:
+                the_urls.append(self.config["datastet_mention_url"])
+                the_names.append("DataStet dataset mention")
+
+        if len(the_urls)>0:
+            for the_url, the_name in zip(the_urls, the_names):
+                if not the_url.endswith("/"):
+                    the_url += "/"
+                the_url += "service/isalive"
+                try:
+                    r = requests.get(the_url)
+
+                    if r.status_code != 200:
+                        logging.error(the_name + " server does not appear up and running " + str(r.status_code))
+                        isalive = False
+                    else:
+                        logging.info(the_name + " server is up and running")
+                        isalive = True
+                except: 
+                    logging.error(the_name + " server does not appear up and running: " + 
+                        "the test call to " + the_name + " failed, please check and re-start a server")
+                    isalive = False
+        return isalive
 
     def _init_lmdb(self):
         # open in write mode
         envFilePath = os.path.join(self.config["data_path"], 'entries_software')
         self.env_software = lmdb.open(envFilePath, map_size=map_size)
 
-        #envFilePath = os.path.join(self.config["data_path"], 'fail_software')
-        #self.env_fail_software = lmdb.open(envFilePath, map_size=map_size)
+        envFilePath = os.path.join(self.config["data_path"], 'entries_dataset')
+        self.env_dataset = lmdb.open(envFilePath, map_size=map_size)
 
-    def annotate_directory(self, directory, force=False):
-        # recursive directory walk for all pdf documents
+    def annotate_directory(self, target, directory, force=False):
+        # recursive directory walk for all pdf documents, target indicate if we process for software ("software") 
+        # or dataset ("dataset") mentions
         pdf_files = []
         out_files = []
         full_records = []
@@ -130,31 +154,36 @@ class software_mentions_client(object):
         sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: 0 s - 0 PDF/s")
         sys.stdout.flush()
 
+        if target == "software":
+            local_env = self.env_software
+        else:
+            local_env = self.env_dataset
+
         for root, directories, filenames in os.walk(directory):
             for filename in filenames:
                 if filename.endswith(".pdf") or filename.endswith(".PDF") or filename.endswith(".pdf.gz"):
                     if filename.endswith(".pdf"):
-                        filename_json = filename.replace(".pdf", ".software.json")
+                        filename_json = filename.replace(".pdf", "."+target+".json")
                     elif filename.endswith(".pdf.gz"):
-                        filename_json = filename.replace(".pdf.gz", ".software.json")
+                        filename_json = filename.replace(".pdf.gz", "."+target+".json")
                     elif filename.endswith(".PDF"):
-                        filename_json = filename.replace(".PDF", ".software.json")
+                        filename_json = filename.replace(".PDF", "."+target+".json")
 
                     sha1 = getSHA1(os.path.join(root,filename))
 
                     # if the json file already exists and not force, we skip 
                     if os.path.isfile(os.path.join(root, filename_json)) and not force:
                         # check that this id is considered in the lmdb keeping track of the process
-                        with self.env_software.begin() as txn:
+                        with local_env.begin() as txn:
                             status = txn.get(sha1.encode(encoding='UTF-8'))
                         if status is None:
-                            with self.env_software.begin(write=True) as txn2:
+                            with local_env.begin(write=True) as txn2:
                                 txn2.put(sha1.encode(encoding='UTF-8'), "True".encode(encoding='UTF-8')) 
                         continue
 
                     # if identifier already processed successfully in the local lmdb, we skip
                     # the hash of the PDF file is used as unique identifier for the PDF (SHA1)
-                    with self.env_software.begin() as txn:
+                    with local_env.begin() as txn:
                         status = txn.get(sha1.encode(encoding='UTF-8'))
                         if status is not None and not force:
                             continue
@@ -166,7 +195,7 @@ class software_mentions_client(object):
                     full_records.append(record)
                     
                     if len(pdf_files) == self.config["batch_size"]:
-                        self.annotate_batch(pdf_files, out_files, full_records)
+                        self.annotate_batch(target, pdf_files, out_files, full_records)
                         nb_total += len(pdf_files)
                         pdf_files = []
                         out_files = []
@@ -176,13 +205,13 @@ class software_mentions_client(object):
                         sys.stdout.flush()
         # last batch
         if len(pdf_files) > 0:
-            self.annotate_batch(pdf_files, out_files, full_records)
+            self.annotate_batch(target, pdf_files, out_files, full_records)
             nb_total += len(pdf_files)
             runtime = round(time.time() - start_time, 3)
             sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: " + str(runtime) + " s - " + str(round(nb_total/runtime, 2)) + " PDF/s  ")
             sys.stdout.flush()
 
-    def annotate_collection(self, data_path, force=False):
+    def annotate_collection(self, target, data_path, force=False):
         # init lmdb transactions
         # open in read mode
         envFilePath = os.path.join(data_path, 'entries')
@@ -202,6 +231,11 @@ class software_mentions_client(object):
         sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: 0 s - 0 PDF/s")
         sys.stdout.flush()
 
+        if target == "software":
+            local_env = self.env_software
+        else:
+            local_env = self.env_dataset
+
         with self.env.begin(write=True) as txn:
             cursor = txn.cursor()
             for key, value in cursor:
@@ -213,15 +247,15 @@ class software_mentions_client(object):
                 json_outfile = os.path.join(os.path.join(data_path, generateStoragePath(local_entry['id']), local_entry['id'], local_entry['id']+".software.json"))
                 if os.path.isfile(json_outfile) and not force:
                     # check that this id is considered in the lmdb keeping track of the process
-                    with self.env_software.begin() as txn:
+                    with local_env.begin() as txn:
                         status = txn.get(local_entry['id'].encode(encoding='UTF-8'))
                     if status is None:
-                        with self.env_software.begin(write=True) as txn2:
+                        with local_env.begin(write=True) as txn2:
                             txn2.put(local_entry['id'].encode(encoding='UTF-8'), "True".encode(encoding='UTF-8')) 
                     continue
 
                 # if identifier already processed in the local lmdb (successfully or not) and not force, we skip this file
-                with self.env_software.begin() as txn:
+                with local_env.begin() as txn:
                     status = txn.get(local_entry['id'].encode(encoding='UTF-8'))
                     if status is not None and not force:
                         continue
@@ -247,15 +281,15 @@ class software_mentions_client(object):
             sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: " + str(runtime) + " s - " + str(round(nb_total/runtime, 2)) + " PDF/s  ")
             sys.stdout.flush()
 
-    def annotate_batch(self, pdf_files, out_files=None, full_records=None):
+    def annotate_batch(self, target, pdf_files, out_files=None, full_records=None):
         # process a provided list of PDF
         with ThreadPoolExecutor(max_workers=self.config["concurrency"]) as executor:
             #with ProcessPoolExecutor(max_workers=self.config["concurrency"]) as executor:
             # note: ProcessPoolExecutor will not work due to env objects that can't be serailized (e.g. LMDB variables)
             # client is not cpu bounded but io bounded, so normally it's still okay with threads and GIL
-            executor.map(self.annotate, pdf_files, out_files, full_records, timeout=self.config["timeout"])
+            executor.map(self.annotate, target, pdf_files, out_files, full_records, timeout=self.config["timeout"])
 
-    def reprocess_failed(self):
+    def reprocess_failed(self, target):
         """
         we reprocess only files which have led to a failure of the service, we don't reprocess documents
         where no software mention has been found 
@@ -265,7 +299,13 @@ class software_mentions_client(object):
         full_records = []
         i = 0
         nb_total = 0
-        with self.env_software.begin() as txn:
+
+        if target == "software":
+            local_env = self.env_software
+        else:
+            local_env = self.env_dataset
+
+        with local_env.begin() as txn:
             cursor = txn.cursor()
             for key, value in cursor:
                 nb_total += 1
@@ -275,7 +315,7 @@ class software_mentions_client(object):
                     # reprocess
                     logging.info("reprocess " + local_id)
                     pdf_files.append(os.path.join(data_path, generateStoragePath(local_id), local_id, local_id+".pdf"))
-                    out_files.append(os.path.join(data_path, generateStoragePath(local_id), local_id, local_id+".software.json"))
+                    out_files.append(os.path.join(data_path, generateStoragePath(local_id), local_id, local_id+"."+target+".json"))
                     # get the full record from the data_path env
                     json_file = os.path.join(data_path, generateStoragePath(local_id), local_id, local_id+".json")
                     if os.path.isfile(json_file):
@@ -293,7 +333,7 @@ class software_mentions_client(object):
 
         # last batch
         if len(pdf_files) > 0:
-            self.annotate_batch(pdf_files, out_files, full_records)
+            self.annotate_batch(target, pdf_files, out_files, full_records)
 
         logging.info("re-processed: " + str(nb_total) + " entries")
 
@@ -304,8 +344,12 @@ class software_mentions_client(object):
         """
         # close environments
         self.env_software.close()
+        self.env_dataset.close()
 
         envFilePath = os.path.join(self.config["data_path"], 'entries_software')
+        shutil.rmtree(envFilePath)
+
+        envFilePath = os.path.join(self.config["data_path"], 'entries_dataset')
         shutil.rmtree(envFilePath)
 
         # re-init the environments
@@ -374,7 +418,7 @@ class software_mentions_client(object):
 
         print("number of glutton metadata lookup failed:", failed)
 
-    def annotate(self, file_in, file_out, full_record):
+    def annotate(self, target, file_in, file_out, full_record):
         try:
             if file_in.endswith('.pdf.gz'):
                 the_file = {'input': gzip.open(file_in, 'rb')}
@@ -384,10 +428,13 @@ class software_mentions_client(object):
             logging.exception("input file appears invalid: " + file_in)
             return
 
-        url = f'http://{self.config["software_mention_host"]}:{self.config["software_mention_port"]}'
+        url = self.config[target+"_mention_url"]
         if not url.endswith("/"):
             url += "/"
-        url += endpoint_pdf
+        if target == "software":
+            url += endpoint_software_pdf
+        else:
+            url += endpoint_dataset_pdf
         
         jsonObject = None
         try:
@@ -690,6 +737,7 @@ def getSHA1(the_file):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Softcite software mention recognizer client")
+    parser.add_argument("target", help="one of [software, dataset, all], mandatory")
     parser.add_argument("--repo-in", default=None, help="path to a directory of PDF files to be processed by the Softcite software mention recognizer")  
     parser.add_argument("--file-in", default=None, help="a single PDF input file to be processed by the Softcite software mention recognizer") 
     parser.add_argument("--file-out", default=None, help="path to a single output the software mentions in JSON format, extracted from the PDF file-in") 
@@ -706,6 +754,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    target = args.target    
+    if target not in ('software', 'dataset', 'all'):
+        print('target process not specifed, must be one of [software, dataset, all]')
+
     data_path = args.data_path
     config_path = args.config
     reprocess = args.reprocess
@@ -717,10 +769,10 @@ if __name__ == "__main__":
     full_diagnostic = args.diagnostic
     scorched_earth = args.scorched_earth
 
-    client = software_mentions_client(config_path=config_path)
+    client = softdata_mentions_client(config_path=config_path)
 
-    if not load_mongo and not client.service_isalive():
-        sys.exit("Softcite software mention service not available, leaving...")
+    if not load_mongo and not client.service_isalive(target):
+        sys.exit("Service for " + target + " mentions not available, leaving...")
 
     force = False
     if reset:
@@ -739,21 +791,54 @@ if __name__ == "__main__":
         if repo_in is None and data_path is None: 
             sys.exit("the repo_in where to find the PDF files to be processed is not indicated, leaving...")
         if data_path is not None:
-            client.load_mongo(data_path)
+            client.load_mongo(data_path, target)
         elif repo_in is not None:
-            client.load_mongo(repo_in)
+            client.load_mongo(repo_in, target)
     elif full_diagnostic:
         client.diagnostic(full_diagnostic=True)
     elif reprocess:
-        client.reprocess_failed()
+        if target == "all" or target == "software":
+            client.reprocess_failed(target)
     elif repo_in is not None: 
-        client.annotate_directory(repo_in, force)
+        if target == "all":
+            p1 = multiprocessing.Process(target=client.annotate_directory, args=("software", repo_in, force))
+            p2 = multiprocessing.Process(target=client.annotate_directory, args=("dataset", repo_in, force))
+            p1.start()
+            p2.start()
+            p1.join()
+            p2.join()
+        elif target == "software":
+            client.annotate_directory("software", repo_in, force)
+        elif target == "dataset":
+            client.annotate_directory("dataset", repo_in, force)
     elif file_in is not None:
-        client.annotate(file_in, file_out, None)
+        # check if file_out is a path, then set the output file name from the input file name
+        if os.path.isdir(file_out):
+            file_out = os.path.join(file_out, os.path.basename(file_in))
+        if target == "all":
+            p1 = multiprocessing.Process(target=client.annotate, args=("software", file_in, file_out, None))
+            p2 = multiprocessing.Process(target=client.annotate, args=("dataset", file_in, file_out, None))
+            p1.start()
+            p2.start()
+            p1.join()
+            p2.join()
+        elif target == "software":
+            client.annotate("software", file_in, file_out, None)
+        elif target == "dataset":    
+            client.annotate("dataset", file_in, file_out, None)
     elif data_path is not None: 
-        client.annotate_collection(data_path, force)
+        if target == "all":
+            p1 = multiprocessing.Process(target=client.annotate_collection, args=("software", data_path, force))
+            p2 = multiprocessing.Process(target=client.annotate_collection, args=("dataset", data_path, force))
+            p1.start()
+            p2.start()
+            p1.join()
+            p2.join()
+        elif target == "software":
+            client.annotate_collection("software", data_path, force)
+        elif target == "dataset":        
+            client.annotate_collection("dataset", data_path, force)
 
     if not full_diagnostic:
         client.diagnostic(full_diagnostic=False)
-    
     
