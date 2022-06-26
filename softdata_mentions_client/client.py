@@ -755,6 +755,19 @@ def getSHA1(the_file):
 
     return sha1.hexdigest()
 
+def set_file_out(target, file_out):
+    # check if file_out is a path, then set the output file name from the input file name
+    if os.path.isdir(file_out):
+        file_out_name = os.path.basename(file_in)
+        if file_out_name.endswith(".pdf"):
+            file_out_name = file_out_name.replace(".pdf", "."+target+".json")
+        elif filename.endswith(".pdf.gz"):
+            file_out_name = file_out_name.replace(".pdf.gz", "."+target+".json")
+        elif filename.endswith(".PDF"):
+            file_out_name = file_out_name.replace(".PDF", "."+target+".json")
+        file_out = os.path.join(file_out, file_out_name)
+    return file_out
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Software and Dataset mention recognizer client for Softcite and Datastet services")
     parser.add_argument("target", help="one of [software, dataset, all], mandatory")
@@ -817,8 +830,17 @@ if __name__ == "__main__":
     elif full_diagnostic:
         client.diagnostic(full_diagnostic=True)
     elif reprocess:
-        if target == "all" or target == "software":
-            client.reprocess_failed(target)
+        if target == "all":
+            p1 = multiprocessing.Process(target=client.reprocess_failed, args=("software"))
+            p2 = multiprocessing.Process(target=client.reprocess_failed, args=("dataset"))
+            p1.start()
+            p2.start()
+            p1.join()
+            p2.join()
+        elif target == "software":
+            client.reprocess_failed("software")
+        elif target == "dataset":
+            client.reprocess_failed("dataset")
     elif repo_in is not None: 
         if target == "all":
             p1 = multiprocessing.Process(target=client.annotate_directory, args=("software", repo_in, force))
@@ -835,19 +857,11 @@ if __name__ == "__main__":
         # check input fine
         if not os.path.exists(file_in) or not os.path.isfile(file_in):
             sys.exit("invalid input file at " + file_in + ", leaving...")
-        # check if file_out is a path, then set the output file name from the input file name
-        if os.path.isdir(file_out):
-            file_out_name = os.path.basename(file_in)
-            if file_out_name.endswith(".pdf"):
-                file_out_name = file_out_name.replace(".pdf", "."+target+".json")
-            elif filename.endswith(".pdf.gz"):
-                file_out_name = file_out_name.replace(".pdf.gz", "."+target+".json")
-            elif filename.endswith(".PDF"):
-                file_out_name = file_out_name.replace(".PDF", "."+target+".json")
-            file_out = os.path.join(file_out, file_out_name)
         if target == "all":
-            p1 = multiprocessing.Process(target=client.annotate, args=("software", file_in, file_out, None))
-            p2 = multiprocessing.Process(target=client.annotate, args=("dataset", file_in, file_out, None))
+            file_out1 = set_file_out("software", file_out)
+            p1 = multiprocessing.Process(target=client.annotate, args=("software", file_in, file_out1, None))
+            file_out2 = set_file_out("dataset", file_out)
+            p2 = multiprocessing.Process(target=client.annotate, args=("dataset", file_in, file_out2, None))
             p1.start()
             p2.start()
             p1.join()
