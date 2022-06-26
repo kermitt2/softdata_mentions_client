@@ -54,7 +54,8 @@ class softdata_mentions_client(object):
         if self.config['bucket_name'] is not None and len(self.config['bucket_name']) > 0:
             self.s3 = S3.S3(self.config)
 
-        self.mongo_db = None
+        self.mongo_db_software = None
+        self.mongo_db_dataset = None
 
         # load blacklist 
         self.blacklisted = []
@@ -102,15 +103,13 @@ class softdata_mentions_client(object):
         the_urls = []
         the_names = []
 
-        print(self.config)
-
         if target == "software" or target == "all":
             if "software_mention_url" in self.config and len(self.config["software_mention_url"])>0:
                 the_urls.append(self.config["software_mention_url"])
                 the_names.append("Softcite software mention")
         if target == "dataset" or target == "all":
-            if "datastet_mention_url" in self.config and len(self.config["datastet_mention_url"])>0:
-                the_urls.append(self.config["datastet_mention_url"])
+            if "dataset_mention_url" in self.config and len(self.config["dataset_mention_url"])>0:
+                the_urls.append(self.config["dataset_mention_url"])
                 the_names.append("DataStet dataset mention")
 
         if len(the_urls)>0:
@@ -358,65 +357,72 @@ class softdata_mentions_client(object):
     def load_mongo(self, directory):
         if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
             mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
-            self.mongo_db = mongo_client[self.config["mongo_db"]]
-        if self.mongo_db == None:
-            return
+            if "mongo_db_software" in self.config:
+                self.mongo_db_software = mongo_client[self.config["mongo_db_software"]]
+            if "mongo_db_dataset" in self.config:
+                self.mongo_db_dataset = mongo_client[self.config["mongo_db_dataset"]]
+        
+        if self.mongo_db_software != None or self.mongo_db_dataset != None:
+            failed = 0
+            for root, directories, filenames in os.walk(directory):
+                for filename in filenames: 
+                    if filename.endswith(".software.json") or filename.endswith(".dataset.json"):
+                        #print(os.path.join(root,filename))
+                        the_json = open(os.path.join(root, filename)).read()
+                        try:
+                            jsonObject = json.loads(the_json)
+                        except:
+                            print("the json parsing of the following file failed: ", os.path.join(root,filename))
+                            continue
 
-        failed = 0
-        for root, directories, filenames in os.walk(directory):
-            for filename in filenames: 
-                if filename.endswith(".software.json"):
-                    #print(os.path.join(root,filename))
-                    the_json = open(os.path.join(root,filename)).read()
-                    try:
-                        jsonObject = json.loads(the_json)
-                    except:
-                        print("the json parsing of the following file failed: ", os.path.join(root,filename))
-                        continue
+                        local_id = None
+                        if not 'id' in jsonObject:
+                            ind = filename.find(".")
+                            if ind != -1:
+                                local_id = filename[:ind]
+                                jsonObject['id'] = local_id
+                        else:
+                            local_id = jsonObject['id']
 
-                    local_id = None
-                    if not 'id' in jsonObject:
-                        ind = filename.find(".")
-                        if ind != -1:
-                            local_id = filename[:ind]
-                            jsonObject['id'] = local_id
-                    else:
-                        local_id = jsonObject['id']
+                        if local_id == None:
+                            continue
 
-                    if local_id == None:
-                        continue
+                        # no mention, no insert
+                        if not 'mentions' in jsonObject or len(jsonObject['mentions']) == 0:
+                            continue
 
-                    # no mention, no insert
-                    if not 'mentions' in jsonObject or len(jsonObject['mentions']) == 0:
-                        continue
+                        # possibly clean original file path
+                        if "original_file_path" in jsonObject:
+                            if jsonObject["original_file_path"].startswith('../biblio-glutton-harvester/'):
+                                jsonObject["original_file_path"] = jsonObject["original_file_path"].replace('../biblio-glutton-harvester/', '')
+                        
+                        # update metadata via biblio-glutton (this is to be done for mongo upload from file only)
+                        if "biblio_glutton_url" in self.config and len(self.config["biblio_glutton_url"].strip())>0:
+                            if 'metadata' in jsonObject and 'doi' in jsonObject['metadata']: 
+                                try:
+                                    glutton_metadata = self.biblio_glutton_lookup(doi=jsonObject['metadata']['doi'])
+                                except: 
+                                    print("the call to biblio-glutton failed for", jsonObject['metadata']['doi'])
+                                    failed += 1
+                                    continue
+                                if glutton_metadata != None:
+                                    # update/complete document metadata
+                                    glutton_metadata['id'] = local_id
+                                    if 'best_oa_location' in jsonObject['metadata']:
+                                        glutton_metadata['best_oa_location'] = jsonObject['metadata']['best_oa_location']
+                                    jsonObject['metadata'] = glutton_metadata
 
-                    # possibly clean original file path
-                    if "original_file_path" in jsonObject:
-                        if jsonObject["original_file_path"].startswith('../biblio-glutton-harvester/'):
-                            jsonObject["original_file_path"] = jsonObject["original_file_path"].replace('../biblio-glutton-harvester/', '')
-                    
-                    # update metadata via biblio-glutton (this is to be done for mongo upload from file only)
-                    if "biblio_glutton_url" in self.config and len(self.config["biblio_glutton_url"].strip())>0:
-                        if 'metadata' in jsonObject and 'doi' in jsonObject['metadata']: 
-                            try:
-                                glutton_metadata = self.biblio_glutton_lookup(doi=jsonObject['metadata']['doi'])
-                            except: 
-                                print("the call to biblio-glutton failed for", jsonObject['metadata']['doi'])
-                                failed += 1
-                                continue
-                            if glutton_metadata != None:
-                                # update/complete document metadata
-                                glutton_metadata['id'] = local_id
-                                if 'best_oa_location' in jsonObject['metadata']:
-                                    glutton_metadata['best_oa_location'] = jsonObject['metadata']['best_oa_location']
-                                jsonObject['metadata'] = glutton_metadata
-                                self._insert_mongo(jsonObject)
+                                    if filename.endswith(".software.json"):
+                                        target = "software"
+                                    else:
+                                        target = "dataset"
+                                    self._insert_mongo(target, jsonObject)
+                                else:
+                                    failed += 1
                             else:
                                 failed += 1
-                        else:
-                            failed += 1
 
-        print("number of glutton metadata lookup failed:", failed)
+            print("number of failed biblio-glutton update:", failed)
 
     def annotate(self, target, file_in, file_out, full_record):
         try:
@@ -485,6 +491,8 @@ class softdata_mentions_client(object):
                         normalizedForm = normalizedForm.replace(" ", "").strip()
                         if normalizedForm not in self.blacklisted:
                             new_mentions.append(mention)
+                    else:
+                        new_mentions.append(mention)
                 jsonObject['mentions'] = new_mentions
 
             if file_out is not None: 
@@ -494,7 +502,7 @@ class softdata_mentions_client(object):
 
             if "mongo_host" in self.config and len(self.config["mongo_host"].strip()) > 0:
                 # we store the result in mongo db 
-                self._insert_mongo(jsonObject)
+                self._insert_mongo(target, jsonObject)
         elif jsonObject is not None:
             # we have no software mention in the document, we still write an empty result file
             # along with the PDF/medtadata files to easily keep track of the processing for this doc
@@ -596,22 +604,34 @@ class softdata_mentions_client(object):
             print("\t  * with PMC ID:", result.count())  
             print("---")
 
-    def _insert_mongo(self, jsonObject):
-        if self.mongo_db is None:
-            mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
-            self.mongo_db = mongo_client[self.config["mongo_db"]]
+    def _insert_mongo(self, target, jsonObject):
+        if not "id" in jsonObject:
+            return
 
-        if self.mongo_db is None:
+        local_mongo_db = None
+
+        if target == "software":
+            if self.mongo_db_software is None and "mongo_db_software" in self.config:
+                mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
+                self.mongo_db_software = mongo_client[self.config["mongo_db_software"]]
+            local_mongo_db = self.mongo_db_software
+        elif target == "dataset":
+            if self.mongo_db_dataset is None and "mongo_db_dataset" in self.config:
+                mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
+                self.mongo_db_dataset = mongo_client[self.config["mongo_db_dataset"]]
+            local_mongo_db = self.mongo_db_dataset
+
+        if local_mongo_db == None:
             return
 
         # check if the article/annotations are not already present
-        if self.mongo_db.documents.count_documents({ 'id': jsonObject['id'] }, limit = 1) != 0:
+        if local_mongo_db.documents.count_documents({ 'id': jsonObject['id'] }, limit = 1) != 0:
             # if yes we replace this object, its annotations and references
             result = self.mongo_db.documents.find_one({ 'id': jsonObject['id'] })
             _id = result['_id']
-            self.mongo_db.annotations.delete_many( {'document': _id} )
-            self.mongo_db.references.delete_many( {'document': _id} )
-            result = self.mongo_db.documents.delete_one({ 'id': jsonObject['id'] })
+            local_mongo_db.annotations.delete_many( {'document': _id} )
+            local_mongo_db.references.delete_many( {'document': _id} )
+            result = local_mongo_db.documents.delete_one({ 'id': jsonObject['id'] })
             #print ("result:", type(result), "-- deleted count:", result.deleted_count)
         
         # clean json
@@ -623,13 +643,13 @@ class softdata_mentions_client(object):
             del jsonObjectDocument['mentions']
         if 'references' in jsonObjectDocument:
             del jsonObjectDocument['references']
-        inserted_doc_id = self.mongo_db.documents.insert_one(jsonObjectDocument).inserted_id
+        inserted_doc_id = local_mongo_db.documents.insert_one(jsonObjectDocument).inserted_id
         
         local_ref_map = {}
         if 'references' in jsonObject:
             for reference in jsonObject['references']:
                 reference["document"] = inserted_doc_id
-                inserted_reference_id = self.mongo_db.references.insert_one(reference).inserted_id
+                inserted_reference_id = local_mongo_db.references.insert_one(reference).inserted_id
                 local_ref_map[str(reference["refKey"])] = inserted_reference_id
 
         if 'mentions' in jsonObject:
@@ -640,7 +660,7 @@ class softdata_mentions_client(object):
                     for reference in mention["references"]:
                         if str(reference["refKey"]) in local_ref_map:
                             reference["reference_id"] = local_ref_map[str(reference["refKey"])]
-                inserted_mention_id = self.mongo_db.annotations.insert_one(mention).inserted_id
+                inserted_mention_id = local_mongo_db.annotations.insert_one(mention).inserted_id
 
 
     def biblio_glutton_lookup(self, doi=None, pmcid=None, pmid=None, istex_id=None, istex_ark=None):
@@ -812,9 +832,19 @@ if __name__ == "__main__":
         elif target == "dataset":
             client.annotate_directory("dataset", repo_in, force)
     elif file_in is not None:
+        # check input fine
+        if not os.path.exists(file_in) or not os.path.isfile(file_in):
+            sys.exit("invalid input file at " + file_in + ", leaving...")
         # check if file_out is a path, then set the output file name from the input file name
         if os.path.isdir(file_out):
-            file_out = os.path.join(file_out, os.path.basename(file_in))
+            file_out_name = os.path.basename(file_in)
+            if file_out_name.endswith(".pdf"):
+                file_out_name = file_out_name.replace(".pdf", "."+target+".json")
+            elif filename.endswith(".pdf.gz"):
+                file_out_name = file_out_name.replace(".pdf.gz", "."+target+".json")
+            elif filename.endswith(".PDF"):
+                file_out_name = file_out_name.replace(".PDF", "."+target+".json")
+            file_out = os.path.join(file_out, file_out_name)
         if target == "all":
             p1 = multiprocessing.Process(target=client.annotate, args=("software", file_in, file_out, None))
             p2 = multiprocessing.Process(target=client.annotate, args=("dataset", file_in, file_out, None))
@@ -839,6 +869,6 @@ if __name__ == "__main__":
         elif target == "dataset":        
             client.annotate_collection("dataset", data_path, force)
 
-    if not full_diagnostic:
+    if not full_diagnostic and file_in is None:
         client.diagnostic(full_diagnostic=False)
     
