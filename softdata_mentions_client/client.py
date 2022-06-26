@@ -736,7 +736,7 @@ def getSHA1(the_file):
     return sha1.hexdigest()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description = "Softcite software mention recognizer client")
+    parser = argparse.ArgumentParser(description = "Software and Dataset mention recognizer client for Softcite and Datastet services")
     parser.add_argument("target", help="one of [software, dataset, all], mandatory")
     parser.add_argument("--repo-in", default=None, help="path to a directory of PDF files to be processed by the Softcite software mention recognizer")  
     parser.add_argument("--file-in", default=None, help="a single PDF input file to be processed by the Softcite software mention recognizer") 

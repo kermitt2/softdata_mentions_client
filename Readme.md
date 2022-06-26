@@ -1,6 +1,6 @@
 # Software and Dataset mention recognizer client
 
-Python client for using the Softcite software mention recognition service and the DataStet dataset mention recognition service. It can be applied to 
+Simple Python client for using the Softcite software mention recognition service and the DataStet dataset mention recognition service. It can be applied to: 
 
 * individual PDF files
 
@@ -8,12 +8,13 @@ Python client for using the Softcite software mention recognition service and th
 
 * to a collection of documents harvested by [biblio-glutton-harvester](https://github.com/kermitt2/biblio-glutton-harvester) and [article-dataset-builder](https://github.com/kermitt2/article-dataset-builder), with the benefit of re-using the collection manifest for injectng metadata and keeping track of progress. The collection can be stored locally or on a S3 storage. 
 
+The client can call either one of the two services or both, parallelizing queries efficiently for individual or combined services. 
 
 ## Requirements
 
 The client has been tested with Python 3.6-3.8. 
 
-The client requires a working [Softcite software mention recognition service](https://github.com/ourresearch/software-mentions) and a working [Datastet dataStet mention recognition service](https://github.com/kermitt2/datastet). Service host and port can be changed in the `config.json` file of the client. 
+The client requires a working [Softcite software mention recognition service](https://github.com/ourresearch/software-mentions) and/or a working [Datastet dataStet mention recognition service](https://github.com/kermitt2/datastet). Service host and port can be changed in the `config.json` file of the client. 
 
 The easiest is to use docker images for running these services: 
 
@@ -56,37 +57,39 @@ Finally install the project in editable state
 ## Usage and options
 
 ```
-usage: softdata_mentions_client/client.py [-h] [--repo-in REPO_IN] [--file-in FILE_IN]
-                                  [--file-out FILE_OUT]
-                                  [--data-path DATA_PATH] [--config CONFIG]
-                                  [--reprocess] [--reset] [--load]
-                                  [--diagnostic] [--scorched-earth]
+usage: client.py [-h] [--repo-in REPO_IN] [--file-in FILE_IN] [--file-out FILE_OUT]
+                 [--data-path DATA_PATH] [--config CONFIG] [--reprocess] [--reset] [--load]
+                 [--diagnostic] [--scorched-earth]
+                 target
 
-Softdata software mention recognizer client
+Software and Dataset mention recognizer client for Softcite and Datastet services
+
+positional arguments:
+  target                one of [software, dataset, all], mandatory
 
 optional arguments:
   -h, --help            show this help message and exit
-  --repo-in REPO_IN     path to a directory of PDF files to be processed by
-                        the mention recognizer service(s)
-  --file-in FILE_IN     a single PDF input file to be processed by the
-                        mention recognizer service(s)
-  --file-out FILE_OUT   path to a single output the software and dataset 
-                        mentions in JSON format, extracted from the PDF file-in
+  --repo-in REPO_IN     path to a directory of PDF files to be processed by the Softcite
+                        software mention recognizer
+  --file-in FILE_IN     a single PDF input file to be processed by the Softcite software
+                        mention recognizer
+  --file-out FILE_OUT   path to a single output the software mentions in JSON format, extracted
+                        from the PDF file-in
   --data-path DATA_PATH
-                        path to the resource files created/harvested by
-                        biblio-glutton-harvester
+                        path to the resource files created/harvested by biblio-glutton-
+                        harvester
   --config CONFIG       path to the config file, default is ./config.json
   --reprocess           reprocessed failed PDF
-  --reset               ignore previous processing states and re-init the
-                        annotation process from the beginning
-  --load                load json files into the MongoDB instance, the --repo-
-                        in parameter must indicate the path to the directory
-                        of resulting json files to be loaded
-  --diagnostic          perform a full count of annotations and diagnostic
-                        using MongoDB regarding the harvesting and
-                        transformation process
-  --scorched-earth      remove a PDF file after its successful processing in
-                        order to save storage space, careful with this!
+  --reset               ignore previous processing states and re-init the annotation process
+                        from the beginning
+  --load                load json files into the MongoDB instance, the --repo-in or --data-path
+                        parameter must indicate the path to the directory of resulting json
+                        files to be loaded, --dump must indicate the path to the json dump file
+                        of document metadata
+  --diagnostic          perform a full count of annotations and diagnostic using MongoDB
+                        regarding the harvesting and transformation process
+  --scorched-earth      remove a PDF file after its sucessful processing in order to save
+                        storage space, careful with this!
 ```
 
 The logs are written by default in a file `./client.log`, but the location of the logs can be changed in the configuration file (default `./config.json`).
