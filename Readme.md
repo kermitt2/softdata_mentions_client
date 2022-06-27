@@ -96,9 +96,9 @@ The logs are written by default in a file `./client.log`, but the location of th
 
 ### Processing local PDF files
 
-For processing a single file., the resulting json being written as file at the indicated output path:
+For processing a single file for both software and dataset mentions, the resulting json being written as file at the indicated output path:
 
-> python3 softdata_mentions_client/client.py --file-in toto.pdf --file-out toto.json
+> python3 softdata_mentions_client/client.py all --file-in toto.pdf --file-out toto.json
 
 For processing recursively a directory of PDF files, the results will be:
 
@@ -106,11 +106,19 @@ For processing recursively a directory of PDF files, the results will be:
 
 * *and* in the directory of PDF files, as json files, together with each processed PDF
 
-> python3 softdata_mentions_client/client.py --repo-in /mnt/data/biblio/pmc_oa_dir/
+> python3 softdata_mentions_client/client.py all --repo-in /mnt/data/biblio/pmc_oa_dir/
 
 The default config file is `./config.json`, but could also be specified via the parameter `--config`: 
 
-> python3 softdata_mentions_client/client.py --repo-in /mnt/data/biblio/pmc_oa_dir/ --config ./my_config.json
+> python3 softdata_mentions_client/client.py all --repo-in /mnt/data/biblio/pmc_oa_dir/ --config ./my_config.json
+
+To process document for only software mentions:
+
+> python3 softdata_mentions_client/client.py software --file-in toto.pdf --file-out toto.json
+
+and for only dataset mentions:
+
+> python3 softdata_mentions_client/client.py dataset --file-in toto.pdf --file-out toto.json
 
 
 ### Processing a collection of PDF harvested by biblio-glutton-harvester
@@ -119,13 +127,13 @@ The default config file is `./config.json`, but could also be specified via the 
 
 * locally:
 
-> python3 softdata_mentions_client/client.py --data-path /mnt/data/biblio-glutton-harvester/data/
+> python3 softdata_mentions_client/client.py all --data-path /mnt/data/biblio-glutton-harvester/data/
 
 `--data-path` indicates the path to the repository of data harvested by [biblio-glutton-harvester](https://github.com/kermitt2/biblio-glutton-harvester).
 
 The resulting JSON files will be enriched by the metadata records of the processed PDF and will be stored together with each processed PDF in the data repository. 
 
-If the harvested collection is located on a S3 storage, the access information must be indicated in the configuration file of the client `config.json`. The extracted software mention will be written in a file with extension `.software.json`, for example:
+If the harvested collection is located on a S3 storage, the access information must be indicated in the configuration file of the client `config.json`. The extracted software mention will be written in a file with extension `.software.json` and the extracted dataset mentions in a file with extension `.dataset.json` , for example:
 
 ```
 -rw-rw-r-- 1 lopez lopez 1.1M Aug  8 03:26 0100a44b-6f3f-4cf7-86f9-8ef5e8401567.pdf

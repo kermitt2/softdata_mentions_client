@@ -24,6 +24,7 @@ import multiprocessing
     Run the software and dataset mention recognizer services on collections of harvested PDF documents
 """
 
+# lmdb allocation size map
 map_size = 100 * 1024 * 1024 * 1024 
 
 # default endpoints
@@ -38,7 +39,7 @@ logging.basicConfig(filename='client.log', filemode='w', level=logging.DEBUG)
 
 class softdata_mentions_client(object):
     """
-    Python client for using the Softcite software mention service. 
+    Python client for using the Softcite software and DataStet dataset mention services. 
     """
 
     def __init__(self, config_path='./config.json'):
@@ -243,7 +244,7 @@ class softdata_mentions_client(object):
                 #print(local_entry)
 
                 # if the json file already exists and not force, we skip 
-                json_outfile = os.path.join(os.path.join(data_path, generateStoragePath(local_entry['id']), local_entry['id'], local_entry['id']+".software.json"))
+                json_outfile = os.path.join(os.path.join(data_path, generateStoragePath(local_entry['id']), local_entry['id'], local_entry['id']+"." + target + ".json"))
                 if os.path.isfile(json_outfile) and not force:
                     # check that this id is considered in the lmdb keeping track of the process
                     with local_env.begin() as txn:
@@ -356,73 +357,79 @@ class softdata_mentions_client(object):
 
     def load_mongo(self, directory):
         if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
-            mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
+            try:
+                mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]), serverSelectionTimeoutMS=1000)
+                mongo_client.server_info()
+            except:
+                print("Fail to connect to the MongoDb server:", self.config["mongo_host"]+":"+self.config["mongo_port"])
+                return
             if "mongo_db_software" in self.config:
                 self.mongo_db_software = mongo_client[self.config["mongo_db_software"]]
             if "mongo_db_dataset" in self.config:
                 self.mongo_db_dataset = mongo_client[self.config["mongo_db_dataset"]]
         
-        if self.mongo_db_software != None or self.mongo_db_dataset != None:
-            failed = 0
-            for root, directories, filenames in os.walk(directory):
-                for filename in filenames: 
-                    if filename.endswith(".software.json") or filename.endswith(".dataset.json"):
-                        #print(os.path.join(root,filename))
-                        the_json = open(os.path.join(root, filename)).read()
-                        try:
-                            jsonObject = json.loads(the_json)
-                        except:
-                            print("the json parsing of the following file failed: ", os.path.join(root,filename))
-                            continue
+        if self.mongo_db_software == None and self.mongo_db_dataset == None:
+            return
 
-                        local_id = None
-                        if not 'id' in jsonObject:
-                            ind = filename.find(".")
-                            if ind != -1:
-                                local_id = filename[:ind]
-                                jsonObject['id'] = local_id
-                        else:
-                            local_id = jsonObject['id']
+        failed = 0
+        for root, directories, filenames in os.walk(directory):
+            for filename in filenames: 
+                if filename.endswith(".software.json") or filename.endswith(".dataset.json"):
+                    #print(os.path.join(root,filename))
+                    the_json = open(os.path.join(root, filename)).read()
+                    try:
+                        jsonObject = json.loads(the_json)
+                    except:
+                        print("the json parsing of the following file failed: ", os.path.join(root,filename))
+                        continue
 
-                        if local_id == None:
-                            continue
+                    local_id = None
+                    if not 'id' in jsonObject:
+                        ind = filename.find(".")
+                        if ind != -1:
+                            local_id = filename[:ind]
+                            jsonObject['id'] = local_id
+                    else:
+                        local_id = jsonObject['id']
 
-                        # no mention, no insert
-                        if not 'mentions' in jsonObject or len(jsonObject['mentions']) == 0:
-                            continue
+                    if local_id == None:
+                        continue
 
-                        # possibly clean original file path
-                        if "original_file_path" in jsonObject:
-                            if jsonObject["original_file_path"].startswith('../biblio-glutton-harvester/'):
-                                jsonObject["original_file_path"] = jsonObject["original_file_path"].replace('../biblio-glutton-harvester/', '')
-                        
-                        # update metadata via biblio-glutton (this is to be done for mongo upload from file only)
-                        if "biblio_glutton_url" in self.config and len(self.config["biblio_glutton_url"].strip())>0:
-                            if 'metadata' in jsonObject and 'doi' in jsonObject['metadata']: 
-                                try:
-                                    glutton_metadata = self.biblio_glutton_lookup(doi=jsonObject['metadata']['doi'])
-                                except: 
-                                    print("the call to biblio-glutton failed for", jsonObject['metadata']['doi'])
-                                    failed += 1
-                                    continue
-                                if glutton_metadata != None:
-                                    # update/complete document metadata
-                                    glutton_metadata['id'] = local_id
-                                    if 'best_oa_location' in jsonObject['metadata']:
-                                        glutton_metadata['best_oa_location'] = jsonObject['metadata']['best_oa_location']
-                                    jsonObject['metadata'] = glutton_metadata
+                    # no mention, no insert
+                    if not 'mentions' in jsonObject or len(jsonObject['mentions']) == 0:
+                        continue
 
-                                    if filename.endswith(".software.json"):
-                                        target = "software"
-                                    else:
-                                        target = "dataset"
-                                    self._insert_mongo(target, jsonObject)
+                    # possibly clean original file path
+                    if "original_file_path" in jsonObject:
+                        if jsonObject["original_file_path"].startswith('../biblio-glutton-harvester/'):
+                            jsonObject["original_file_path"] = jsonObject["original_file_path"].replace('../biblio-glutton-harvester/', '')
+                    
+                    # update metadata via biblio-glutton (this is to be done for mongo upload from file only)
+                    if "biblio_glutton_url" in self.config and len(self.config["biblio_glutton_url"].strip())>0:
+                        if 'metadata' in jsonObject and 'doi' in jsonObject['metadata']: 
+                            try:
+                                glutton_metadata = self.biblio_glutton_lookup(doi=jsonObject['metadata']['doi'])
+                            except: 
+                                print("the call to biblio-glutton failed for", jsonObject['metadata']['doi'])
+                                failed += 1
+                                continue
+                            if glutton_metadata != None:
+                                # update/complete document metadata
+                                glutton_metadata['id'] = local_id
+                                if 'best_oa_location' in jsonObject['metadata']:
+                                    glutton_metadata['best_oa_location'] = jsonObject['metadata']['best_oa_location']
+                                jsonObject['metadata'] = glutton_metadata
+
+                                if filename.endswith(".software.json"):
+                                    target = "software"
                                 else:
-                                    failed += 1
+                                    target = "dataset"
+                                self._insert_mongo(target, jsonObject)
                             else:
                                 failed += 1
-
-            print("number of failed biblio-glutton update:", failed)
+                        else:
+                            failed += 1
+        print("number of failed biblio-glutton update:", failed)
 
     def annotate(self, target, file_in, file_out, full_record):
         try:
@@ -472,7 +479,7 @@ class softdata_mentions_client(object):
 
         # at this stage, if jsonObject is still at None, the process failed 
         if jsonObject is not None and 'mentions' in jsonObject and len(jsonObject['mentions']) > 0:
-            # we have found software mentions in the document
+            # we have found software/dataset mentions in the document
             # add file, DOI, date and version info in the JSON, if available
             if full_record is not None:
                 jsonObject['id'] = full_record['id']
@@ -504,7 +511,7 @@ class softdata_mentions_client(object):
                 # we store the result in mongo db 
                 self._insert_mongo(target, jsonObject)
         elif jsonObject is not None:
-            # we have no software mention in the document, we still write an empty result file
+            # we have no software/dataset mention in the document, we still write an empty result file
             # along with the PDF/medtadata files to easily keep track of the processing for this doc
             if file_out is not None: 
                 # force empty explicit no mentions
@@ -514,8 +521,13 @@ class softdata_mentions_client(object):
 
         # for keeping track of the processing
         # update processed entry in the lmdb (having entities or not) and failure
-        if self.env_software is not None and full_record is not None:
-            with self.env_software.begin(write=True) as txn:
+        if target == "software":
+            local_env = self.env_software
+        else:
+            local_env = self.env_dataset
+
+        if local_env is not None and full_record is not None:
+            with local_env.begin(write=True) as txn:
                 if jsonObject is not None:
                     txn.put(full_record['id'].encode(encoding='UTF-8'), "True".encode(encoding='UTF-8')) 
                 else:
@@ -529,7 +541,7 @@ class softdata_mentions_client(object):
             except:
                 logging.exception("Error while deleting file " + file_in)
 
-    def diagnostic(self, full_diagnostic=False):
+    def diagnostic(self, target, full_diagnostic=False):
         """
         Print a report on failures stored during the harvesting process
         """
@@ -537,7 +549,12 @@ class softdata_mentions_client(object):
         nb_fail = 0
         nb_success = 0  
 
-        with self.env_software.begin() as txn:
+        if target == "software":
+            local_env = self.env_software
+        else:
+            local_env = self.env_dataset
+
+        with local_env.begin() as txn:
             cursor = txn.cursor()
             for key, value in cursor:
                 nb_total += 1
@@ -557,31 +574,59 @@ class softdata_mentions_client(object):
 
         if full_diagnostic:
             # check mongodb access - if mongodb is not used or available, we don't go further
-            if self.mongo_db is None:
-                if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
-                    mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
-                    self.mongo_db = mongo_client[self.config["mongo_db"]]
+            local_mongo_db = None
+            if target == "software":
+                if self.mongo_db_software is None:
+                    if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
+                        try:
+                            mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]), serverSelectionTimeoutMS=1000)
+                            mongo_client.server_info()
+                            self.mongo_db_software = mongo_client[self.config["mongo_db_software"]]
+                        except:
+                            print("Fail to connect to the MongoDb server:", self.config["mongo_host"]+":"+self.config["mongo_port"])
+                local_mongo_db = self.mongo_db_software
+            elif target == "dataset":
+                if self.mongo_db_dataset is None:
+                    if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
+                        try:
+                            mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]), serverSelectionTimeoutMS=1000)
+                            mongo_client.server_info()
+                            self.mongo_db_dataset = mongo_client[self.config["mongo_db_dataset"]]
+                        except:
+                            print("Fail to connect to the MongoDb server:", self.config["mongo_host"]+":"+self.config["mongo_port"])    
+                local_mongo_db = self.mongo_db_dataset
 
-            if self.mongo_db is None:
+            if local_mongo_db is None:
                 print("MongoDB server is not available")    
                 return
 
-            print("MongoDB - number of documents: ", self.mongo_db.documents.count_documents({}))
-            print("MongoDB - number of software mentions: ", self.mongo_db.annotations.count_documents({}))
+            print("MongoDB - number of documents: ", local_mongo_db.documents.count_documents({}))
+            print("MongoDB - number of software mentions: ", local_mongo_db.annotations.count_documents({}))
 
-            result = self.mongo_db.annotations.find( {"software-name": {"$exists": True}} )
-            print("\t  * with software name:", result.count())
+            if target == "software":
+                result = local_mongo_db.annotations.find( {"software-name": {"$exists": True}} )
+                print("\t  * with software name:", result.count())
  
-            result = self.mongo_db.annotations.find( {"version": {"$exists": True}} )
-            print("\t  * with version:", result.count())
+                result = local_mongo_db.annotations.find( {"version": {"$exists": True}} )
+                print("\t  * with version:", result.count())
 
-            result = self.mongo_db.annotations.find( {"publisher": {"$exists": True}} )
+            if target == "dataset":
+                result = local_mongo_db.annotations.find( {"dataset-name": {"$exists": True}} )
+                print("\t  * with software name:", result.count())
+ 
+                result = local_mongo_db.annotations.find( {"dataset-implicit": {"$exists": True}} )
+                print("\t  * with version:", result.count())
+
+                result = local_mongo_db.annotations.find( {"data-device": {"$exists": True}} )
+                print("\t  * with version:", result.count())
+
+            result = local_mongo_db.annotations.find( {"publisher": {"$exists": True}} )
             print("\t  * with publisher:", result.count())
 
-            result = self.mongo_db.annotations.find( {"url": {"$exists": True}} )
+            result = local_mongo_db.annotations.find( {"url": {"$exists": True}} )
             print("\t  * with url:", result.count())    
 
-            results = self.mongo_db.annotations.find( {"references": {"$exists": True}} )
+            results = local_mongo_db.annotations.find( {"references": {"$exists": True}} )
             nb_ref = 0
             has_ref = 0
             for result in results:
@@ -592,15 +637,15 @@ class softdata_mentions_client(object):
             print("\t  * with at least one reference", nb_ref) 
             print("\t  * total references", nb_ref) 
 
-            print("MongoDB - number of bibliographical references: ", self.mongo_db.references.count_documents({}))
+            print("MongoDB - number of bibliographical references: ", local_mongo_db.references.count_documents({}))
 
-            result = self.mongo_db.references.find( {"tei": {"$regex": "DOI"}} )
+            result = local_mongo_db.references.find( {"tei": {"$regex": "DOI"}} )
             print("\t  * with DOI:", result.count())  
 
-            result = self.mongo_db.references.find( {"tei": {"$regex": "PMID"}} )
+            result = local_mongo_db.references.find( {"tei": {"$regex": "PMID"}} )
             print("\t  * with PMID:", result.count())  
 
-            result = self.mongo_db.references.find( {"tei": {"$regex": "PMC"}} )
+            result = local_mongo_db.references.find( {"tei": {"$regex": "PMC"}} )
             print("\t  * with PMC ID:", result.count())  
             print("---")
 
@@ -609,16 +654,25 @@ class softdata_mentions_client(object):
             return
 
         local_mongo_db = None
-
         if target == "software":
             if self.mongo_db_software is None and "mongo_db_software" in self.config:
-                mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
-                self.mongo_db_software = mongo_client[self.config["mongo_db_software"]]
+                if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
+                    try:
+                        mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]), serverSelectionTimeoutMS=1000)
+                        mongo_client.server_info()
+                        self.mongo_db_software = mongo_client[self.config["mongo_db_software"]]
+                    except:
+                        print("Fail to connect to the MongoDb server:", self.config["mongo_host"]+":"+self.config["mongo_port"])
             local_mongo_db = self.mongo_db_software
         elif target == "dataset":
             if self.mongo_db_dataset is None and "mongo_db_dataset" in self.config:
-                mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]))
-                self.mongo_db_dataset = mongo_client[self.config["mongo_db_dataset"]]
+                if "mongo_host" in self.config and len(self.config["mongo_host"].strip())>0:
+                    try:
+                        mongo_client = pymongo.MongoClient(self.config["mongo_host"], int(self.config["mongo_port"]), serverSelectionTimeoutMS=1000)
+                        mongo_client.server_info()
+                        self.mongo_db_dataset = mongo_client[self.config["mongo_db_dataset"]]
+                    except:
+                        print("Fail to connect to the MongoDb server:", self.config["mongo_host"]+":"+self.config["mongo_port"])
             local_mongo_db = self.mongo_db_dataset
 
         if local_mongo_db == None:
@@ -828,7 +882,11 @@ if __name__ == "__main__":
         elif repo_in is not None:
             client.load_mongo(repo_in, target)
     elif full_diagnostic:
-        client.diagnostic(full_diagnostic=True)
+        if target == "all":
+            client.diagnostic("software", full_diagnostic=True)
+            client.diagnostic("dataset", full_diagnostic=True)
+        else:
+            client.diagnostic(target, full_diagnostic=True)
     elif reprocess:
         if target == "all":
             p1 = multiprocessing.Process(target=client.reprocess_failed, args=("software"))
@@ -884,5 +942,9 @@ if __name__ == "__main__":
             client.annotate_collection("dataset", data_path, force)
 
     if not full_diagnostic and file_in is None:
-        client.diagnostic(full_diagnostic=False)
+        if target == "all":
+            client.diagnostic("software", full_diagnostic=False)
+            client.diagnostic("dataset", full_diagnostic=False)
+        else:
+            client.diagnostic(target, full_diagnostic=False)
     
