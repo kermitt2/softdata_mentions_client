@@ -146,6 +146,7 @@ class softdata_mentions_client(object):
         # or dataset ("dataset") mentions
         pdf_files = []
         out_files = []
+        targets = []
         full_records = []
         nb_total = 0
         start_time = time.time()
@@ -171,6 +172,9 @@ class softdata_mentions_client(object):
 
                     sha1 = getSHA1(os.path.join(root,filename))
 
+                    print("\ninput:", filename)
+                    print("output:", filename_json)
+
                     # if the json file already exists and not force, we skip 
                     if os.path.isfile(os.path.join(root, filename_json)) and not force:
                         # check that this id is considered in the lmdb keeping track of the process
@@ -190,22 +194,25 @@ class softdata_mentions_client(object):
 
                     pdf_files.append(os.path.join(root,filename))
                     out_files.append(os.path.join(root, filename_json))
+                    targets.append(target)
                     record = {}
                     record["id"] = sha1
                     full_records.append(record)
                     
                     if len(pdf_files) == self.config["batch_size"]:
-                        self.annotate_batch(target, pdf_files, out_files, full_records)
+                        self.annotate_batch(targets, pdf_files, out_files, full_records)
                         nb_total += len(pdf_files)
                         pdf_files = []
                         out_files = []
                         full_records = []
+                        targets = []
                         runtime = round(time.time() - start_time, 3)
                         sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: " + str(runtime) + " s - " + str(round(nb_total/runtime, 2)) + " PDF/s  ")
                         sys.stdout.flush()
         # last batch
         if len(pdf_files) > 0:
-            self.annotate_batch(target, pdf_files, out_files, full_records)
+            print("last batch...")
+            self.annotate_batch(targets, pdf_files, out_files, full_records)
             nb_total += len(pdf_files)
             runtime = round(time.time() - start_time, 3)
             sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: " + str(runtime) + " s - " + str(round(nb_total/runtime, 2)) + " PDF/s  ")
@@ -225,6 +232,7 @@ class softdata_mentions_client(object):
         pdf_files = []
         out_files = []
         full_records = []
+        targets = []
         nb_total = 0
         start_time = time.time()
 
@@ -263,31 +271,35 @@ class softdata_mentions_client(object):
                 pdf_files.append(os.path.join(data_path, generateStoragePath(local_entry['id']), local_entry['id'], local_entry['id']+".pdf"))
                 out_files.append(json_outfile)
                 full_records.append(local_entry)
+                targets.append(target)
 
                 if len(pdf_files) == self.config["batch_size"]:
-                    self.annotate_batch(pdf_files, out_files, full_records)
+                    self.annotate_batch(targets, pdf_files, out_files, full_records)
                     nb_total += len(pdf_files)
                     pdf_files = []
                     out_files = []
                     full_records = []
+                    targets = []
                     runtime = round(time.time() - start_time, 3)
                     sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: " + str(runtime) + " s - " + str(round(nb_total/runtime, 2)) + " PDF/s  ")
                     sys.stdout.flush()
 
         # last batch
         if len(pdf_files) > 0:
-            self.annotate_batch(pdf_files, out_files, full_records)
+            self.annotate_batch(targets, pdf_files, out_files, full_records)
             runtime = round(time.time() - start_time, 3)
             sys.stdout.write("\rtotal process: " + str(nb_total) + " - accumulated runtime: " + str(runtime) + " s - " + str(round(nb_total/runtime, 2)) + " PDF/s  ")
             sys.stdout.flush()
 
-    def annotate_batch(self, target, pdf_files, out_files=None, full_records=None):
+    def annotate_batch(self, targets, pdf_files, out_files=None, full_records=None):
+
+        print("annotate_batch for", targets[0], len(pdf_files), "files")
         # process a provided list of PDF
         with ThreadPoolExecutor(max_workers=self.config["concurrency"]) as executor:
             #with ProcessPoolExecutor(max_workers=self.config["concurrency"]) as executor:
             # note: ProcessPoolExecutor will not work due to env objects that can't be serailized (e.g. LMDB variables)
             # client is not cpu bounded but io bounded, so normally it's still okay with threads and GIL
-            executor.map(self.annotate, target, pdf_files, out_files, full_records, timeout=self.config["timeout"])
+            executor.map(self.annotate, targets, pdf_files, out_files, full_records, timeout=self.config["timeout"])
 
     def reprocess_failed(self, target):
         """
@@ -432,6 +444,8 @@ class softdata_mentions_client(object):
         print("number of failed biblio-glutton update:", failed)
 
     def annotate(self, target, file_in, file_out, full_record):
+        print("annotate", target, file_in)
+
         try:
             if file_in.endswith('.pdf.gz'):
                 the_file = {'input': gzip.open(file_in, 'rb')}
@@ -606,9 +620,6 @@ class softdata_mentions_client(object):
             if target == "software":
                 result = local_mongo_db.annotations.find( {"software-name": {"$exists": True}} )
                 print("\t  * with software name:", result.count())
- 
-                result = local_mongo_db.annotations.find( {"version": {"$exists": True}} )
-                print("\t  * with version:", result.count())
 
             if target == "dataset":
                 result = local_mongo_db.annotations.find( {"dataset-name": {"$exists": True}} )
@@ -620,11 +631,14 @@ class softdata_mentions_client(object):
                 result = local_mongo_db.annotations.find( {"data-device": {"$exists": True}} )
                 print("\t  * with version:", result.count())
 
+            result = local_mongo_db.annotations.find( {"version": {"$exists": True}} )
+            print("\t  * with version:", result.count())
+
             result = local_mongo_db.annotations.find( {"publisher": {"$exists": True}} )
             print("\t  * with publisher:", result.count())
 
             result = local_mongo_db.annotations.find( {"url": {"$exists": True}} )
-            print("\t  * with url:", result.count())    
+            print("\t  * with url:", result.count())
 
             results = local_mongo_db.annotations.find( {"references": {"$exists": True}} )
             nb_ref = 0
