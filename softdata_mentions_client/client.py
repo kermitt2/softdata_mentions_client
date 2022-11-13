@@ -579,6 +579,8 @@ class softdata_mentions_client(object):
                     nb_fail += 1
 
         print("\n\n---")
+        print(target+" mentions")
+        print("---")
         print("total entries:", nb_total)
         print("---")
         print("total successfully processed:", nb_success)
